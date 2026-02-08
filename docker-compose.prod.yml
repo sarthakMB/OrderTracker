@@ -1,0 +1,11 @@
+# Production overrides — applied on top of docker-compose.yml
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# What this adds:
+#   - Auto-restart on crash or server reboot
+
+services:
+  app:
+    restart: unless-stopped

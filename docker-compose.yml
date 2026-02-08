@@ -1,0 +1,27 @@
+# Docker Compose for Order Tracker
+#
+# Simple setup: one container runs Bun (Express API + React static files).
+# SQLite is file-based, so no separate database container needed.
+#
+# Usage:
+#   docker compose up --build        # Build and start
+#   docker compose down              # Stop
+#   docker compose logs -f app       # View logs
+
+services:
+  app:
+    build: .
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - DB_PATH=/app/data/orders.db
+    volumes:
+      # Named volume keeps SQLite data safe across container rebuilds
+      - order_data:/app/data
+    # Enables colored terminal output in logs
+    tty: true
+
+volumes:
+  order_data:

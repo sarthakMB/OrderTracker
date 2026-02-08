@@ -97,9 +97,16 @@ server/                          # Backend (Bun + Express)
 ├── package.json
 └── tsconfig.json
 
+Dockerfile                       # Multi-stage Docker build
+docker-compose.yml               # Base Docker Compose config
+docker-compose.prod.yml          # Production overrides (restart policy)
+.dockerignore                    # Excludes from Docker build context
+.env.example                     # Environment variable reference
+
 deploy/                          # Deployment scripts
-├── deploy.sh
-└── nginx-order-tracker.conf
+├── deploy.sh                    # Recurring deploy (git pull + docker build)
+├── setup.sh                     # One-time VPS setup (Nginx + SSL)
+└── nginx-order-tracker.conf     # Nginx reverse proxy template
 ```
 
 ## State Flow
@@ -140,7 +147,7 @@ App
 | Path | Contents |
 |------|----------|
 | `.claude/docs/architecture.md` | Detailed file-by-file frontend architecture docs |
-| `.claude/docs/other_app_deployment.md` | Deployment reference from the other app (neonchess) — Docker, Nginx, SSL, VPS setup, multi-app pattern |
+| `.claude/docs/deployment_infrastructure.md` | Deployment reference — Docker, Nginx, SSL, VPS setup, multi-app pattern |
 | `.claude/plans/backend_plan.md` | Implementation plan for adding the Bun + Express backend — architecture, API design, TDD strategy, deployment, phases |
 
 ## Rules
@@ -182,7 +189,11 @@ npm run dev:server       # Bun with --watch (port 3001)
 cd server && bun test    # Run backend tests
 cd server && bun test --watch  # TDD mode — re-run on file changes
 
-# Deployment
-docker compose up --build              # Run locally in Docker (port 3100)
-./deploy/deploy.sh                     # Deploy to VPS
+# Docker (local)
+docker compose up --build              # Build and run locally (port 3001)
+docker compose down                    # Stop containers
+
+# Deployment (on VPS)
+./deploy/setup.sh <domain>             # One-time: register Nginx + SSL
+./deploy/deploy.sh                     # Recurring: pull, build, start
 ```

@@ -1,0 +1,15 @@
+node_modules
+server/node_modules
+dist
+.git
+server/data
+*.log
+.env*
+*.md
+.claude
+.DS_Store
+.vscode
+.idea
+deploy
+Dockerfile
+docker-compose*.yml
