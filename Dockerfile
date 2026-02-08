@@ -10,6 +10,7 @@ RUN npm ci
 
 # Copy only the files Vite needs to build the frontend
 COPY index.html vite.config.ts tsconfig*.json ./
+COPY public/ public/
 COPY src/ src/
 COPY components.json ./
 
