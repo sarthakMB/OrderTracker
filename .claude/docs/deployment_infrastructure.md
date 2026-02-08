@@ -31,11 +31,11 @@ Docker Compose
 | `.dockerignore` | Excludes from build context |
 | `.env.example` | Config template (Docker service names) |
 | `.env.example.local` | Config template (localhost, for local dev) |
-| `deploy/setup-vps.sh` | One-time VPS initialization |
+| `deploy/nginx.conf` | Nginx reverse proxy template |
+| `deploy/setup.sh` | First-time app registration (Nginx + SSL) |
 | `deploy/deploy.sh` | Production deployment |
 | `deploy/test_deploy.sh` | Dev/staging deployment |
-| `deploy/nginx-chess-app.conf` | Nginx reverse proxy config |
-| `dev_private/deploy_repo/vps-infra/` | Multi-app VPS infrastructure |
+| `dev_private/deploy_repo/` | Shared VPS infrastructure setup (separate repo) |
 
 ---
 
@@ -91,35 +91,59 @@ Key variables: `PORT`, `SESSION_SECRET`, `NODE_ENV`, `DATABASE_URL`, `REDIS_URL`
 
 ---
 
-## VPS Setup (`deploy/setup-vps.sh`)
+## Deployment Architecture (Two-Repo Split)
 
-One-time initialization of a fresh Ubuntu VPS. Usage:
+Infrastructure setup is decoupled from app deployment. The VPS is provisioned once with shared infrastructure, then each app self-registers.
+
+```
+1. VPS Infra (one-time)          2. Per-App Setup (once per app)      3. Deploy (recurring)
+   dev_private/deploy_repo/         deploy/setup.sh <domain>             deploy/deploy.sh <secret>
+   └── setup-vps.sh                 └── Registers Nginx + SSL            └── git pull, build, start
+```
+
+### Shared Infrastructure (`dev_private/deploy_repo/`)
+
+App-agnostic VPS setup. Intended to live in its own repo (e.g., `vps-infra`). Run once on a fresh Ubuntu VPS.
 
 ```bash
-./deploy/setup-vps.sh yourdomain.com
+./setup-vps.sh
 ```
 
 What it does:
-
 1. **System update** — `apt update && apt upgrade`
-2. **Install Docker** — via `get.docker.com`, adds user to docker group
-3. **Install Nginx** — reverse proxy
-4. **Install Certbot** — SSL certificate management
-5. **Configure Nginx** — replaces `yourdomain.com` in the template, installs to `/etc/nginx/sites-available/chess-app`, enables site, removes default, tests and reloads
-6. **Obtain SSL** — `certbot --nginx` for domain + www variant, non-interactive, email `admin@<domain>`
-7. **Test auto-renewal** — `certbot renew --dry-run`
-8. **Firewall (UFW)** — allows SSH, HTTP (80), HTTPS (443), enables firewall
+2. **Install Git** — if not present
+3. **Install Docker** — via `get.docker.com`, adds user to docker group
+4. **Install Nginx** — enables systemd service, removes default site
+5. **Install Certbot** — with nginx plugin
+6. **Firewall (UFW)** — allows SSH + Nginx Full
 
-After running, log out and back in for Docker group membership to take effect.
+All steps are idempotent (`command -v` checks before installing).
+
+After running, **log out and back in** for Docker group membership.
+
+### Per-App Setup (`deploy/setup.sh <domain>`)
+
+First-time registration of this app with Nginx. Run once after cloning on the VPS.
+
+```bash
+./deploy/setup.sh chess.example.com
+```
+
+What it does:
+1. Generates Nginx config from `deploy/nginx.conf` template (replaces `APP_DOMAIN`)
+2. Installs to `/etc/nginx/sites-available/chess-app`, symlinks to `sites-enabled`
+3. Tests and reloads Nginx
+4. Obtains SSL via `certbot --nginx` for domain + www variant
+5. Verifies auto-renewal with dry-run
 
 ---
 
-## Nginx Configuration (`deploy/nginx-chess-app.conf`)
+## Nginx Configuration (`deploy/nginx.conf`)
 
 ```nginx
 server {
     listen 80;
-    server_name yourdomain.com www.yourdomain.com;
+    server_name APP_DOMAIN www.APP_DOMAIN;
 
     location / {
         proxy_pass http://localhost:3000;
@@ -142,6 +166,7 @@ server {
 }
 ```
 
+- `APP_DOMAIN` placeholder is replaced by `deploy/setup.sh` at install time.
 - `Upgrade` + `Connection: upgrade` headers enable WebSocket protocol upgrade (required for Socket.IO).
 - 24-hour read/send timeouts prevent premature WebSocket disconnection.
 - Certbot automatically modifies this to add HTTPS listener (port 443), HTTP→HTTPS redirect, and SSL cert paths.
@@ -169,9 +194,12 @@ Same as `deploy.sh` but uses **base compose only** (no prod overrides):
 ### Quick Reference
 
 ```bash
-# First-time setup
-./deploy/setup-vps.sh chess.example.com
+# One-time VPS infra setup (from vps-infra repo)
+./setup-vps.sh
 # (log out, log back in)
+
+# One-time app registration
+./deploy/setup.sh chess.example.com
 
 # Deploy production
 ./deploy/deploy.sh "your-secret-key"
@@ -194,54 +222,23 @@ docker compose exec -it app sh
 
 ---
 
-## Multi-App VPS Setup (Advanced)
+## Multi-App VPS Pattern
 
-**Location:** `dev_private/deploy_repo/vps-infra/`
-
-For hosting multiple apps on a single VPS with centralized Nginx and SSL.
-
-### How It Works
+Each app self-registers with Nginx via its own `deploy/setup.sh`. No centralized config file needed.
 
 ```
-Nginx (central, manages all domains/SSL)
-  ├── chess.example.com    → localhost:3000
-  ├── portfolio.example.com → localhost:3001
-  └── blog.example.com     → localhost:3002
+Nginx (shared, installed by vps-infra/setup-vps.sh)
+  ├── chess.example.com    → localhost:3000  (registered by chess app's setup.sh)
+  ├── portfolio.example.com → localhost:3001  (registered by portfolio app's setup.sh)
+  └── blog.example.com     → localhost:3002  (registered by blog app's setup.sh)
 ```
 
-Each app runs its own Docker Compose on a unique host port. Nginx routes by domain.
+To add a new app:
+1. Clone the app repo on the VPS
+2. Run its `deploy/setup.sh <domain>` (registers Nginx config + SSL)
+3. Run its `deploy/deploy.sh` (builds and starts containers)
 
-### Files
-
-| File | Purpose |
-|------|---------|
-| `config.env` | Defines apps as `"name:domain:port"` entries |
-| `setup-infra.sh` | Generates Nginx configs, obtains SSL for all domains |
-| `templates/nginx-app.conf` | Nginx template with `{{APP_NAME}}`, `{{DOMAIN}}`, `{{PORT}}` placeholders |
-
-### config.env
-
-```bash
-APPS=(
-  "neonchess:neonchess.example.com:3000"
-  # "portfolio:example.com:3001"
-)
-CERTBOT_EMAIL="admin@example.com"
-```
-
-### setup-infra.sh
-
-1. Reads `config.env`
-2. Installs Nginx + Certbot if missing
-3. For each app: generates Nginx config from template, enables site
-4. Runs single `certbot --nginx` for all domains at once
-5. Sets up UFW firewall
-
-### Adding a New App
-
-1. Add entry to `config.env`
-2. Re-run `setup-infra.sh`
-3. Deploy the app to its own directory with `docker compose up -d` on the assigned port
+Each app owns its own Nginx config template, SSL registration, and Docker Compose stack. No shared config to coordinate.
 
 ---
 
@@ -271,4 +268,5 @@ CERTBOT_EMAIL="admin@example.com"
 | Multi-stage Dockerfile | Smaller production image |
 | Compose override files | DRY: one base config, env-specific tweaks |
 | Separated scripts (setup / deploy / test_deploy) | Clear intent: one-time vs recurring |
-| Multi-app infra optional | Simple path works first; scale when needed |
+| Two-repo split (infra + app) | Decoupled: VPS setup is app-agnostic, each app self-registers |
+| Self-registration over centralized config | No coordination needed when adding apps; each app is independent |

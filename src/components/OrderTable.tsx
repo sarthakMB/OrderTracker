@@ -1,10 +1,12 @@
 /**
  * OrderTable — displays orders in a table layout.
  *
+ * Shows a loading indicator while orders are being fetched from the server.
  * Shows the EmptyState component when there are no orders to display.
  * The table scrolls horizontally on small screens (mobile-friendly).
  */
 
+import { Loader2 } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -21,6 +23,8 @@ interface OrderTableProps {
   orders: Order[];
   /** Whether the user has ANY orders at all (for the empty state message) */
   hasAnyOrders: boolean;
+  /** True while orders are being loaded from the server */
+  isLoading: boolean;
   /** Called when the user clicks Edit on an order */
   onEdit: (order: Order) => void;
   /** Called when the user clicks Delete on an order */
@@ -30,9 +34,21 @@ interface OrderTableProps {
 export function OrderTable({
   orders,
   hasAnyOrders,
+  isLoading,
   onEdit,
   onDelete,
 }: OrderTableProps) {
+  // Show a loading spinner while fetching from the server
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12 text-muted-foreground">
+        {/* Loader2 from lucide-react — the "animate-spin" class makes it rotate */}
+        <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+        Loading orders...
+      </div>
+    );
+  }
+
   // Show empty state if there are no orders to display
   if (orders.length === 0) {
     return <EmptyState hasOrders={hasAnyOrders} />;

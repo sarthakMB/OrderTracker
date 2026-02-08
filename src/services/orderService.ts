@@ -1,12 +1,14 @@
 /**
- * Order Service — the ONLY file that touches localStorage.
+ * Order Service — the ONLY file that talks to the backend API.
  *
- * This is the "service layer" pattern. All data read/write goes through
- * here. Components never call localStorage directly. This means when we
- * migrate to Supabase later, we only change THIS file — everything else
- * stays the same.
+ * This is the "service layer" pattern. All data fetching goes through
+ * here. Components never call fetch() directly. This means if the API
+ * changes, we only update THIS file — everything else stays the same.
  *
- * Each function here is a simple CRUD operation:
+ * Previously this file used localStorage. Now it calls the Express
+ * backend at /api/orders. All functions are now async (return Promises).
+ *
+ * Each function is a simple CRUD operation:
  *   C - Create (createOrder)
  *   R - Read   (getAllOrders, getOrderById)
  *   U - Update (updateOrder)
@@ -14,130 +16,106 @@
  */
 
 import type { Order, OrderFormData } from "@/types/order";
-import { STORAGE_KEY } from "@/lib/constants";
-
-// ─── Private helpers (not exported) ──────────────────────────────────
 
 /**
- * Load all orders from localStorage.
- * Returns an empty array if nothing is stored yet.
- */
-function loadOrders(): Order[] {
-  const data = localStorage.getItem(STORAGE_KEY);
-
-  // If there's no data yet (first time using the app), return empty array
-  if (!data) return [];
-
-  // JSON.parse converts the stored string back into a JavaScript array
-  return JSON.parse(data) as Order[];
-}
-
-/**
- * Save the full orders array to localStorage.
- * This overwrites whatever was there before.
- */
-function saveOrders(orders: Order[]): void {
-  // JSON.stringify converts the array into a string for storage
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(orders));
-}
-
-/**
- * Generate a simple unique ID for new orders.
+ * Base URL for all API requests.
  *
- * crypto.randomUUID() creates a UUID like "a1b2c3d4-e5f6-...".
- * It's built into all modern browsers — no library needed.
+ * In development, Vite's proxy forwards /api requests to the backend.
+ * In production, the backend serves both the API and the frontend,
+ * so relative URLs work in both cases.
  */
-function generateId(): string {
-  return crypto.randomUUID();
+const API_BASE = "/api/orders";
+
+// ─── Private helper ─────────────────────────────────────────────────
+
+/**
+ * Makes a request to the API and returns the parsed data.
+ *
+ * All our API responses follow the format:
+ *   Success: { success: true, data: ... }
+ *   Error:   { success: false, error: "message" }
+ *
+ * This helper handles that format so each function doesn't have to.
+ * If the API returns an error, it throws an Error with the message.
+ */
+async function apiRequest<T>(
+  url: string,
+  options?: RequestInit
+): Promise<T> {
+  const res = await fetch(url, options);
+  const json = await res.json();
+
+  // If the API says it failed, throw so the caller can catch it
+  if (!json.success) {
+    throw new Error(json.error || "Something went wrong");
+  }
+
+  return json.data as T;
 }
 
 // ─── Public API (exported for use by the app) ────────────────────────
 
-/** Get all orders from storage */
-export function getAllOrders(): Order[] {
-  return loadOrders();
+/** Get all orders from the backend */
+export async function getAllOrders(): Promise<Order[]> {
+  return apiRequest<Order[]>(API_BASE);
 }
 
 /** Find a single order by its ID. Returns undefined if not found. */
-export function getOrderById(id: string): Order | undefined {
-  const orders = loadOrders();
-
-  // .find() returns the first item that matches, or undefined
-  return orders.find((order) => order.id === id);
+export async function getOrderById(id: string): Promise<Order | undefined> {
+  try {
+    return await apiRequest<Order>(`${API_BASE}/${id}`);
+  } catch {
+    // If the order doesn't exist (404), return undefined instead of throwing
+    return undefined;
+  }
 }
 
 /**
- * Create a new order and save it to storage.
+ * Create a new order via the API.
  *
- * Takes the form data (without id/dates) and adds the generated fields.
+ * The server generates the id, createdAt, and updatedAt fields.
  * Returns the complete new order.
  */
-export function createOrder(formData: OrderFormData): Order {
-  const orders = loadOrders();
-  const now = new Date().toISOString();
-
-  // Build the full order object by combining form data with generated fields
-  const newOrder: Order = {
-    ...formData, // spread operator copies all properties from formData
-    id: generateId(),
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  // Add to the beginning of the array so newest orders appear first
-  orders.unshift(newOrder);
-  saveOrders(orders);
-
-  return newOrder;
+export async function createOrder(formData: OrderFormData): Promise<Order> {
+  return apiRequest<Order>(API_BASE, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(formData),
+  });
 }
 
 /**
  * Update an existing order.
  *
- * "Partial<OrderFormData>" means we can pass just the fields we want to
- * change — we don't have to pass every single field. TypeScript's Partial
- * makes all properties optional.
+ * Only sends the fields that changed — the server merges them
+ * with the existing data and bumps the updatedAt timestamp.
  */
-export function updateOrder(
+export async function updateOrder(
   id: string,
   updates: Partial<OrderFormData>
-): Order | undefined {
-  const orders = loadOrders();
-
-  // Find which position in the array this order is at
-  const index = orders.findIndex((order) => order.id === id);
-
-  // If we didn't find it, return undefined
-  if (index === -1) return undefined;
-
-  // Merge the existing order with the updates
-  const updatedOrder: Order = {
-    ...orders[index], // keep existing fields
-    ...updates, // overwrite with new values
-    updatedAt: new Date().toISOString(), // always update the timestamp
-  };
-
-  // Replace the old order in the array
-  orders[index] = updatedOrder;
-  saveOrders(orders);
-
-  return updatedOrder;
+): Promise<Order | undefined> {
+  try {
+    return await apiRequest<Order>(`${API_BASE}/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 /**
  * Delete an order by ID.
- * Returns true if the order was found and deleted, false otherwise.
+ * Returns true if successful, false if the order wasn't found.
  */
-export function deleteOrder(id: string): boolean {
-  const orders = loadOrders();
-  const initialLength = orders.length;
-
-  // .filter() creates a new array WITHOUT the matching order
-  const filtered = orders.filter((order) => order.id !== id);
-
-  // If lengths are the same, nothing was removed (order not found)
-  if (filtered.length === initialLength) return false;
-
-  saveOrders(filtered);
-  return true;
+export async function deleteOrder(id: string): Promise<boolean> {
+  try {
+    await apiRequest<{ deleted: true }>(`${API_BASE}/${id}`, {
+      method: "DELETE",
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }

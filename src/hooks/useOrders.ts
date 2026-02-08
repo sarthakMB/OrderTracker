@@ -6,15 +6,16 @@
  * out of components and into a reusable function.
  *
  * This hook:
- * 1. Holds ALL the app's state (orders, filters, search)
- * 2. Derives filtered/sorted data from that state
- * 3. Exposes action functions (add, update, delete, filter, search)
+ * 1. Holds ALL the app's state (orders, filters, search, loading)
+ * 2. Loads orders from the backend API on mount
+ * 3. Derives filtered/sorted data from that state
+ * 4. Exposes async action functions (add, update, delete, filter, search)
  *
  * App.tsx calls this hook once, then passes state and actions down to
  * child components as props. This is the "single source of truth" pattern.
  */
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import type { Order, OrderFormData, OrderStatus } from "@/types/order";
 import * as orderService from "@/services/orderService";
 import {
@@ -29,6 +30,9 @@ import {
  *
  * Defining this interface makes it clear what the hook provides.
  * Components that receive these as props can reference this type.
+ *
+ * Note: addOrder, editOrder, removeOrder are now async (return Promises)
+ * because they talk to the backend API.
  */
 export interface UseOrdersReturn {
   // State
@@ -37,11 +41,13 @@ export interface UseOrdersReturn {
   activeStatus: OrderStatus | null;
   searchQuery: string;
   statusCounts: Record<OrderStatus, number>;
+  /** True while orders are being loaded from the server */
+  isLoading: boolean;
 
-  // Actions
-  addOrder: (formData: OrderFormData) => void;
-  editOrder: (id: string, updates: Partial<OrderFormData>) => void;
-  removeOrder: (id: string) => void;
+  // Actions (async — they talk to the backend)
+  addOrder: (formData: OrderFormData) => Promise<void>;
+  editOrder: (id: string, updates: Partial<OrderFormData>) => Promise<void>;
+  removeOrder: (id: string) => Promise<void>;
   setActiveStatus: (status: OrderStatus | null) => void;
   setSearchQuery: (query: string) => void;
 }
@@ -50,21 +56,41 @@ export function useOrders(): UseOrdersReturn {
   // ─── State ───────────────────────────────────────────────────────
 
   /**
-   * useState lets a component "remember" values between renders.
-   *
-   * The function passed to useState (called "lazy initializer") runs
-   * only on the very first render — it loads orders from localStorage
-   * once, not on every re-render.
+   * Orders start as an empty array. We load them from the API in useEffect
+   * below. (Previously, we loaded from localStorage in a lazy initializer,
+   * but API calls are async so we can't do that in useState.)
    */
-  const [orders, setOrders] = useState<Order[]>(() =>
-    orderService.getAllOrders()
-  );
+  const [orders, setOrders] = useState<Order[]>([]);
+
+  /** True while we're fetching orders from the server */
+  const [isLoading, setIsLoading] = useState(true);
 
   /** Which status tab is currently selected (null = "All") */
   const [activeStatus, setActiveStatus] = useState<OrderStatus | null>(null);
 
   /** What the user has typed in the search box */
   const [searchQuery, setSearchQuery] = useState("");
+
+  // ─── Initial data load ─────────────────────────────────────────
+
+  /**
+   * useEffect runs code AFTER the component renders.
+   *
+   * The empty array [] as the second argument means "run this only once,
+   * when the component first mounts" (like componentDidMount in class components).
+   *
+   * We fetch all orders from the backend API, then update state.
+   */
+  useEffect(() => {
+    orderService
+      .getAllOrders()
+      .then((data) => setOrders(data))
+      .catch((error) => {
+        // Log the error for debugging — the UI will just show empty state
+        console.error("Failed to load orders:", error);
+      })
+      .finally(() => setIsLoading(false));
+  }, []);
 
   // ─── Derived data ────────────────────────────────────────────────
 
@@ -93,22 +119,24 @@ export function useOrders(): UseOrdersReturn {
   // ─── Actions ─────────────────────────────────────────────────────
 
   /**
-   * useCallback caches a function so it doesn't get recreated on every render.
+   * These actions are now async because they call the backend API.
+   * They throw errors on failure — the caller (App.tsx) catches them
+   * and shows error toasts.
    *
-   * This matters when passing functions as props to child components —
-   * without useCallback, the child would think it got a "new" function
-   * each time and would re-render unnecessarily.
+   * useCallback caches a function so it doesn't get recreated on every render.
+   * This matters when passing functions as props to child components.
    */
 
-  const addOrder = useCallback((formData: OrderFormData) => {
-    const newOrder = orderService.createOrder(formData);
-    // Update React state to trigger a re-render with the new order
+  const addOrder = useCallback(async (formData: OrderFormData) => {
+    // Call the API — it returns the complete order with id + timestamps
+    const newOrder = await orderService.createOrder(formData);
+    // Add to the front of the list (newest first)
     setOrders((prev) => [newOrder, ...prev]);
   }, []);
 
   const editOrder = useCallback(
-    (id: string, updates: Partial<OrderFormData>) => {
-      const updated = orderService.updateOrder(id, updates);
+    async (id: string, updates: Partial<OrderFormData>) => {
+      const updated = await orderService.updateOrder(id, updates);
       if (!updated) return;
 
       // Replace the old order in state with the updated one
@@ -119,8 +147,8 @@ export function useOrders(): UseOrdersReturn {
     []
   );
 
-  const removeOrder = useCallback((id: string) => {
-    const success = orderService.deleteOrder(id);
+  const removeOrder = useCallback(async (id: string) => {
+    const success = await orderService.deleteOrder(id);
     if (!success) return;
 
     // Remove the order from state
@@ -135,6 +163,7 @@ export function useOrders(): UseOrdersReturn {
     activeStatus,
     searchQuery,
     statusCounts,
+    isLoading,
     addOrder,
     editOrder,
     removeOrder,

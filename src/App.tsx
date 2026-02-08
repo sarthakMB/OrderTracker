@@ -28,6 +28,7 @@ function App() {
     activeStatus,
     searchQuery,
     statusCounts,
+    isLoading,
     addOrder,
     editOrder,
     removeOrder,
@@ -61,23 +62,36 @@ function App() {
     setIsDialogOpen(true);
   }
 
-  /** Handle saving from the dialog (works for both create and edit) */
-  function handleSaveOrder(formData: OrderFormData) {
-    if (orderToEdit) {
-      // Editing an existing order
-      editOrder(orderToEdit.id, formData);
-      toast.success("Order updated");
-    } else {
-      // Creating a new order
-      addOrder(formData);
-      toast.success("Order created");
+  /**
+   * Handle saving from the dialog (works for both create and edit).
+   *
+   * Now async because addOrder/editOrder talk to the backend API.
+   * Wrapped in try/catch to show an error toast if the request fails.
+   */
+  async function handleSaveOrder(formData: OrderFormData) {
+    try {
+      if (orderToEdit) {
+        await editOrder(orderToEdit.id, formData);
+        toast.success("Order updated");
+      } else {
+        await addOrder(formData);
+        toast.success("Order created");
+      }
+    } catch (error) {
+      toast.error("Failed to save order. Please try again.");
+      console.error("Save order error:", error);
     }
   }
 
-  /** Handle deleting an order */
-  function handleDeleteOrder(id: string) {
-    removeOrder(id);
-    toast.success("Order deleted");
+  /** Handle deleting an order — async with error handling */
+  async function handleDeleteOrder(id: string) {
+    try {
+      await removeOrder(id);
+      toast.success("Order deleted");
+    } catch (error) {
+      toast.error("Failed to delete order. Please try again.");
+      console.error("Delete order error:", error);
+    }
   }
 
   // ─── Render ──────────────────────────────────────────────────────
@@ -102,6 +116,7 @@ function App() {
         <OrderTable
           orders={filteredOrders}
           hasAnyOrders={orders.length > 0}
+          isLoading={isLoading}
           onEdit={handleEditOrder}
           onDelete={handleDeleteOrder}
         />

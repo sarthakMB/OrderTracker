@@ -23,4 +23,7 @@ npm-debug.log*
 # TypeScript build cache
 *.tsbuildinfo
 
+# SQLite database files (created at runtime)
+server/data/
+
 .claude/private
