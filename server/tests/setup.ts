@@ -1,58 +1,43 @@
 /**
- * Test setup helper — creates a fresh app + database for each test.
+ * Test setup helper — creates a fresh database for each test.
  *
- * Each test gets its own in-memory SQLite database, which means:
- * - Tests are FAST (no disk I/O)
- * - Tests are ISOLATED (no leftover data between tests)
- * - Tests can run in parallel safely
+ * Phase 1 tests only need the database layer (no HTTP server).
+ * Each test gets its own in-memory SQLite database with all migrations applied.
  *
  * Usage in tests:
- *   let testApp: TestApp;
- *   beforeEach(async () => { testApp = await createTestApp(); });
- *   afterEach(() => { testApp.cleanup(); });
+ *   let testDb: TestDb;
+ *   beforeEach(() => { testDb = createTestDb(); });
+ *   afterEach(() => { testDb.cleanup(); });
  */
 
-import { createApp } from "../src/app";
+import { Database } from "bun:sqlite";
 import { createDatabase } from "../src/db/database";
-import type { Server } from "http";
 
-/** What createTestApp returns — everything you need for testing */
-interface TestApp {
-  /** Base URL for making requests, e.g. "http://localhost:54321" */
-  baseUrl: string;
-  /** The HTTP server instance */
-  server: Server;
-  /** Call this in afterEach to close the server and database */
+/** What createTestDb returns — a ready-to-use DB and a cleanup function */
+export interface TestDb {
+  /** The SQLite database instance with all migrations applied */
+  db: Database;
+  /** Call this in afterEach to close the database */
   cleanup: () => void;
 }
 
 /**
- * Creates a fresh test app with an in-memory database.
+ * Creates a fresh test database with all migrations applied.
  *
- * Starts Express on a random port (port 0 = OS picks one for us).
- * Returns the base URL so tests can make fetch requests to it.
+ * Uses ":memory:" so each test is fast and isolated — no disk I/O,
+ * no leftover data between tests.
  */
-export async function createTestApp(): Promise<TestApp> {
-  // ":memory:" = in-memory database, fresh and empty each time
+export function createTestDb(): TestDb {
+  // createDatabase(":memory:") will:
+  // 1. Create an in-memory SQLite DB
+  // 2. Enable WAL mode + foreign keys
+  // 3. Run all migrations (creates tables, indexes, triggers, seeds)
   const db = createDatabase(":memory:");
-  const app = createApp(db);
 
-  return new Promise((resolve) => {
-    // Port 0 tells the OS to assign a random available port
-    const server = app.listen(0, () => {
-      const address = server.address();
-      // address can be a string or an object — we need the port from the object form
-      const port = typeof address === "object" ? address?.port : 0;
-      const baseUrl = `http://localhost:${port}`;
-
-      resolve({
-        baseUrl,
-        server,
-        cleanup: () => {
-          server.close();
-          db.close();
-        },
-      });
-    });
-  });
+  return {
+    db,
+    cleanup: () => {
+      db.close();
+    },
+  };
 }

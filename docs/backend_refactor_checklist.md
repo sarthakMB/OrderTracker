@@ -13,39 +13,39 @@ Created: 2026-02-16
 ## Phase 1 — Database foundation
 
 ### Migration system
-- [ ] Create `server/src/db/migrate.ts` — migration runner that reads `migrations/*.sql` in order
-- [ ] Create `schema_migrations` table (tracks which migrations have run)
-- [ ] Wire migration runner to run at startup in `database.ts` (fail-fast)
-- [ ] Replace old `schema.sql` / `CREATE TABLE IF NOT EXISTS` approach entirely
+- [x] Create `server/src/db/migrate.ts` — migration runner that reads `migrations/*.sql` in order
+- [x] Create `schema_migrations` table (tracks which migrations have run)
+- [x] Wire migration runner to run at startup in `database.ts` (fail-fast)
+- [x] Replace old `schema.sql` / `CREATE TABLE IF NOT EXISTS` approach entirely
 
 ### Schema migrations (fresh start — no legacy data to migrate)
-- [ ] `001_create_customers.sql` — `id`, `name`, `phone`, `notes`, `is_deleted`, `is_test`, `created_at`, `updated_at`
-- [ ] `002_create_vendors.sql` — `id`, `name`, `service_type`, `phone`, `notes`, `active`, `is_deleted`, `is_test`, `created_at`, `updated_at`
-- [ ] `003_create_product_types.sql` — `id`, `name`, `properties` (JSON), `active`, `is_deleted`, `is_test`, `created_at`, `updated_at`
-- [ ] `004_create_users.sql` — `id`, `name`, `role`, `phone`, `password_hash`, `active`, `token_revoked_before`, `is_deleted`, `is_test`, `created_at`, `updated_at`, `last_login_at`
-- [ ] `005_create_orders.sql` — `id`, `order_number`, `customer_id`, `product_type_id`, `title`, `description`, `quantity`, `status`, `process_stage`, `current_vendor_id`, `received_date`, `promised_date`, `internal_due_date`, `delivered_at`, `notes`, `is_deleted`, `is_test`, `created_at`, `updated_at`
-- [ ] `006_create_order_ledger_entries.sql` — `id`, `order_id`, `actor_user_id`, `event_type`, `occurred_at`, `summary`, `payload` (JSON), `is_deleted`, `is_test`
-- [ ] `007_create_indexes.sql` — indexes on `orders` (`status`, `promised_date`, `current_vendor_id`, `product_type_id`, `customer_id`, `updated_at`), index on `order_ledger_entries` (`order_id`, `occurred_at`)
-- [ ] `008_ledger_immutability_triggers.sql` — `BEFORE UPDATE` and `BEFORE DELETE` triggers on `order_ledger_entries` that `RAISE(ABORT)`
-- [ ] `009_seed_product_types.sql` — insert `Cartons`, `Labels`, `Leaflets`
-- [ ] Delete old `server/src/db/schema.sql`
+- [x] `001_create_customers.sql` — `id`, `name`, `phone`, `notes`, `is_deleted`, `is_test`, `created_at`, `updated_at`
+- [x] `002_create_vendors.sql` — `id`, `name`, `service_type`, `phone`, `notes`, `active`, `is_deleted`, `is_test`, `created_at`, `updated_at`
+- [x] `003_create_product_types.sql` — `id`, `name`, `properties` (JSON), `active`, `is_deleted`, `is_test`, `created_at`, `updated_at`
+- [x] `004_create_users.sql` — `id`, `name`, `role`, `phone`, `password_hash`, `active`, `token_revoked_before`, `is_deleted`, `is_test`, `created_at`, `updated_at`, `last_login_at`
+- [x] `005_create_orders.sql` — `id`, `order_number`, `customer_id`, `product_type_id`, `title`, `description`, `quantity`, `status`, `process_stage`, `current_vendor_id`, `received_date`, `promised_date`, `internal_due_date`, `delivered_at`, `notes`, `is_deleted`, `is_test`, `created_at`, `updated_at`
+- [x] `006_create_order_ledger_entries.sql` — `id`, `order_id`, `actor_user_id`, `event_type`, `occurred_at`, `summary`, `payload` (JSON), `is_deleted`, `is_test`
+- [x] `007_create_indexes.sql` — indexes on `orders` (`status`, `promised_date`, `current_vendor_id`, `product_type_id`, `customer_id`, `updated_at`), index on `order_ledger_entries` (`order_id`, `occurred_at`)
+- [x] `008_ledger_immutability_triggers.sql` — `BEFORE UPDATE` and `BEFORE DELETE` triggers on `order_ledger_entries` that `RAISE(ABORT)`
+- [x] `009_seed_product_types.sql` — insert `Cartons`, `Labels`, `Leaflets`
+- [x] Delete old `server/src/db/schema.sql`
 
 ### ID generation
-- [ ] Create ID generator utility — prefixed readable IDs (`O-...`, `C-...`, `V-...`, `U-...`, `PT-...`, `LE-...`)
+- [x] Create ID generator utility — prefixed readable IDs (`O-...`, `C-...`, `V-...`, `U-...`, `PT-...`, `LE-...`)
 
 ### Order number generation
-- [ ] Create `order_number` generator — format `YYMM-NNNN` (e.g., `2602-0001`)
-- [ ] Query max existing order_number for current YYMM to determine next sequence
+- [x] Create `order_number` generator — format `YYMM-NNNN` (e.g., `2602-0001`)
+- [x] Query max existing order_number for current YYMM to determine next sequence
 
 ### Test setup
-- [ ] Rewrite `server/tests/setup.ts` — `createTestApp()` returns `{ db, repos, services }` wired with in-memory SQLite (no HTTP server needed yet)
-- [ ] `cleanup()` just closes the DB
+- [x] Rewrite `server/tests/setup.ts` — `createTestDb()` returns `{ db, cleanup }` wired with in-memory SQLite (no HTTP server needed yet)
+- [x] `cleanup()` just closes the DB
 
 ### Tests (bun test)
-- [ ] Test: migration runner applies migrations in order
-- [ ] Test: migration runner skips already-applied migrations
-- [ ] Test: all tables created with correct columns
-- [ ] Test: ledger immutability triggers block UPDATE and DELETE
+- [x] Test: migration runner applies migrations in order
+- [x] Test: migration runner skips already-applied migrations
+- [x] Test: all tables created with correct columns
+- [x] Test: ledger immutability triggers block UPDATE and DELETE
 
 ---
 
