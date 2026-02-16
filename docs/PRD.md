@@ -11,7 +11,7 @@ cssclasses:
 - **Purpose of this PRD:** Give an AI agent a clear “why/what/how” to build and evolve the app.
 - **Status:** Draft
 - **Owner:** (You)
-- **Last updated:** 2026-02-15
+- **Last updated:** 2026-02-16
 
 ### Version history (product)
 | Product version | Date | Summary |
@@ -48,13 +48,13 @@ Represents a single customer job. The “current” fields (status/vendor/dates/
 
 Minimum fields (MVP):
 - `id` (unique)
-- `order_number` (human-friendly, optional but recommended)
-- `customer_id` (nullable if using ad-hoc customer name)
+- `order_number` (human-friendly, date-prefixed auto-generated; format: `YYMM-NNNN`, e.g., `2602-0001`)
+- `customer_id` 
 - `product_type_id`
 - `title` / `description` (free text)
 - `quantity` (optional)
 - `status` (pipeline stage; see §6.1)
-- `process_stage` (optional; extra detail while `IN_PROGRESS`, e.g., “Design”, “Plate”, “Printing”, “Lamination”)
+- `process_stage` (optional; extra detail while `IN_PROGRESS`, e.g., "Design", "Plate", "Printing", "Lamination"). UX: dropdown with predefined options + "Other" free text input. Stored as free text on the order.
 - `current_vendor_id` (nullable; can be set while `IN_PROGRESS` if work is outsourced)
 - `created_at`
 - `received_date` (date order was received; default = `created_at` date)
@@ -83,7 +83,7 @@ Minimum fields (MVP):
 
 UX rule:
 - Order creation should allow **search existing customers** and **create new quickly**.
-- For true one-offs, allow entering just a `customer_name` without forcing customer creation.
+- **Always create a customer record** — no anonymous/one-off orders without a `customer_id`.
 
 ### 5.3 Vendor
 Small set (5–10 typical). Used as dropdown.
@@ -144,9 +144,10 @@ Suggested `event_type` set (MVP):
 - `CANCELLED_MARKED`
 - `SOFT_DELETED` / `RESTORED`
 
-Payload shape (MVP suggestion):
+Payload shape (MVP — **diffs only**, decided):
 - `changes`: `{ fieldName: { from: <value>, to: <value> } }`
 - Include `reason` where relevant (e.g., cancellations, major date changes).
+- Rationale: diffs are compact (important at 500+ orders/month) and directly useful for timeline UI ("changed status from NEW to IN_PROGRESS").
 
 ### 5.6 User (NEW requirement: AuthN/AuthZ)
 Users are the shop owner (Dad) and employees. Every ledger entry must record who performed the action (`actor_user_id`).
@@ -160,7 +161,7 @@ Minimum fields (MVP):
 - `name`
 - `role` (`OWNER`/`EMPLOYEE`)
 - `phone` (unique login identifier; pick one primary)
-- `password_hash` (or alternative login mechanism supported by the codebase)
+- `password_hash` (hashed via `Bun.password` built-in; supports bcrypt/argon2, zero external deps)
 - `active` (boolean)
 - `created_at`
 - `last_login_at` (optional)
@@ -187,12 +188,15 @@ Status model (MVP):
 - `DELIVERED`
 - `CANCELLED`
 
-Delayed handling (MVP):
-- “DELAYED” is a **computed state** (`is_delayed`/`days_delayed`) based on `promised_date`, not a manually set `status`.
-- In lists and detail views, show a prominent “DELAYED” badge when `is_delayed = true`, and allow filtering “Delayed only”.
+Note: `at_vendor` (from legacy code) is **removed**. Existing `at_vendor` orders migrate to `IN_PROGRESS` + `current_vendor_id` set from `vendorName`.
+
+Delayed handling (MVP — **computed only**, decided):
+- "DELAYED" is a **computed state** (`is_delayed`/`days_delayed`) based on `promised_date`, not a stored `status`. It is NOT in the status enum.
+- In lists and detail views, show a prominent "DELAYED" badge when `is_delayed = true`, and allow filtering "Delayed only".
 
 ### 6.2 Order list (the “control tower”)
 Requirements:
+- **Cursor-based pagination** from day one (the order list will grow to thousands within months).
 - Default view shows active orders sorted by:
   - (1) most delayed first, then
   - (2) promised (due) date soonest first, then
@@ -230,8 +234,11 @@ Permissions (MVP suggestion):
 ### 6.5 Authentication & authorization (IAM)
 AuthN (MVP requirements):
 - Users must sign in to use the app.
-- Sessions/tokens must be securely stored and expire (implementation depends on stack).
-- Passwords must be hashed (if using password auth) and never stored in plaintext.
+- **Auth mechanism:** JWT stored in HttpOnly cookie with long expiry (~1 year). Device-based auth — login once per device, stay logged in.
+- **Revocation:** `token_revoked_before` timestamp on `users` table. If `jwt.iat < user.token_revoked_before`, token is rejected. Allows force-logout per user.
+- **Password hashing:** `Bun.password.hash()` (built-in, zero deps).
+- **Bootstrap:** First OWNER user registered manually via backend (no first-run setup screen).
+- Passwords must be hashed and never stored in plaintext.
 
 AuthZ (MVP requirements):
 - Enforce RBAC on both UI and API/server.
@@ -265,7 +272,7 @@ Authorization matrix (MVP):
 - **Speed:** list loads fast for 500+ active records; typical operations feel instant.
 - **Reliability:** no data loss; safe updates when multiple employees edit.
 - **Simplicity:** mobile-first friendly UI (many updates happen on the floor).
-- **Data migration:** adding `product_type` must not break existing orders; existing orders can default to “Unknown” until edited.
+- **Data migration:** not needed — no legacy production data. Clean start with new schema.
 - **Security:** least-privilege access (RBAC), secure session management, and immutable audit trail (append-only ledger).
 
 ## 9) Success metrics (MVP)
@@ -275,8 +282,20 @@ Authorization matrix (MVP):
 - Fewer missed deadlines / fewer “where is my order” calls (qualitative initially)
 
 ## 10) Open questions (to answer before building)
-Resolved (from user answers):
-1. Minimum statuses: `NEW`, `IN_PROGRESS`, `READY`, `DELIVERED`, `CANCELLED` (delay is computed).
-2. History: YES. Track full order history via an append-only **Order Ledger** (`order_ledger_entries`); current status/vendor/etc. must be derivable from the ledger.
-3. Dates: `received_date`, `promised_date` (drives delay), optional `internal_due_date`, `delivered_at`.
-4. Tenancy: **single shop only** (no multi-shop support for now).
+All resolved (2026-02-16):
+
+1. **Statuses:** `NEW`, `IN_PROGRESS`, `READY`, `DELIVERED`, `CANCELLED`. `DELAYED` is computed only (not a stored status). `at_vendor` removed.
+2. **History:** Full order history via append-only **Order Ledger** (`order_ledger_entries`); current state derivable from ledger.
+3. **Dates:** All stored as full ISO timestamps. `received_date`, `promised_date` (required, drives delay), optional `internal_due_date`, `delivered_at`.
+4. **Tenancy:** Single shop only.
+5. **Auth:** JWT in HttpOnly cookie, long expiry (~1 year). Device-based — login once per device. JWT stores `user_id` only (role read from DB on each request). `token_revoked_before` on users table for force-logout.
+6. **Password hashing:** `Bun.password` (built-in, zero deps).
+7. **Order number:** Date-prefixed auto-generated (`YYMM-NNNN`, e.g., `2602-0001`).
+8. **Ledger payload:** Diffs only (`{ field: { from, to } }`).
+9. **Pagination:** Cursor-based from day one.
+10. **One-off customers:** No. Always create a customer record.
+11. **Process stage:** Dropdown with predefined options + "Other" free text. Stored as free text.
+12. **Seed user:** First OWNER registered manually via backend.
+13. **ID format:** Prefixed readable IDs (e.g., `O-...`, `U-...`).
+14. **Column naming:** snake_case in DB, mapped in repositories.
+15. **Legacy backfill:** Not needed — no production data exists. Clean start. `promised_date` required going forward.

@@ -5,7 +5,7 @@ cssclasses:
 
 # Backend Refactor Plan (PRD-aligned)
 
-Last reviewed: 2026-02-15  
+Last reviewed: 2026-02-16
 Sources: `docs/PRD.md`, `.claude/docs/other_project_architectural_patterns.md`
 
 ## 1) Why this refactor
@@ -26,7 +26,6 @@ This plan proposes a new backend architecture and a safe migration path from the
 ```
 HTTP Request → middleware → route/controller → service → repository → SQLite
 ```
-
 ### 2.2 Responsibilities by layer
 - **Routes/Controllers** (`server/src/routes/`):
   - Parse HTTP (params/body/query)
@@ -63,7 +62,7 @@ This keeps tests easy: they can instantiate an in-memory DB and a full app stack
 server/src/
   app.ts
   index.ts
-  container.ts                 # creates db + repos + services, passes into app
+  bootstrap.ts                 # creates db + repos + services, passes into app
   db/
     database.ts                # connection + pragmas
     migrate.ts                 # migration runner
@@ -100,14 +99,10 @@ server/src/
 
 ## 3) Database refactor plan
 
-### 3.1 Keep SQLite (initially)
-Unless you want to switch to Postgres now, we can keep SQLite for MVP:
+### 3.1 Keep SQLite 
 - Lowest ops overhead (single file DB)
 - Works well for the scale (500+ orders/month)
 - Bun has first-class SQLite support (`bun:sqlite`)
-
-If you *do* want Postgres later, the repository layer makes that swap far easier.
-
 ### 3.2 Migrations (required)
 Current approach “create table on startup” won’t scale to multi-table + safe evolution.
 
@@ -136,16 +131,18 @@ Stores “current state” for fast lists/filters/sorts.
 Must be derivable from ledger events over time.
 
 Key columns (from PRD):
-- identifiers: `id`, `order_number` (optional)
-- customer: `customer_id` (nullable) and/or `customer_name` (for ad-hoc one-offs)
+- identifiers: `id`, `order_number` (date-prefixed auto-generated: `YYMM-NNNN`, e.g., `2602-0001`)
+- customer: `customer_id` (always required — no anonymous orders)
 - product: `product_type_id`
-- text: `title`/`description`, `notes`
-- workflow: `status`, optional `process_stage`, optional `current_vendor_id`
-- dates: `received_date`, `promised_date`, optional `internal_due_date`, optional `delivered_at`
+- workflow: `status` (`NEW`, `IN_PROGRESS`, `READY`, `DELIVERED`, `CANCELLED`), optional `process_stage` (free text), optional `current_vendor_id`. All derived from ledger, stored on projection for fast queries.
+- text: `title`, `description`/`notes`, `quantity` (optional)
+- dates: `received_date`, `promised_date` (required), optional `internal_due_date`, optional `delivered_at` — all stored as full ISO timestamps
 - system: `created_at`, `updated_at`, `is_deleted`, `is_test`
 
 Computed (not stored):
 - `is_delayed`, `days_delayed`, `display_status`
+
+Note: `at_vendor` and `delayed` are **not** valid statuses. `DELAYED` is computed only. `at_vendor` is replaced by `IN_PROGRESS` + `current_vendor_id`.
 
 #### `order_ledger_entries` (append-only)
 Every write action inserts exactly one ledger entry:
@@ -181,31 +178,16 @@ Create indexes that match list/filter/sort requirements:
 - Ledger:
   - `(order_id, occurred_at)`
 
-### 3.5 Data migration from current `orders` table
-Current schema: `customerName`, `customerContact`, `orderDescription`, `vendorName`, `status`, `notes`, `createdAt`, `updatedAt`.
-
-Migration approach (safe + reversible):
-1. Add new tables via migrations (do not drop old `orders` yet).
-2. Run a one-time migration that:
-   - Creates `product_types` with at least one default: `Unknown`
-   - Creates `vendors` by distinct `vendorName`
-   - Creates `customers` by distinct `(customerName, customerContact?)`
-   - Creates new `orders` rows (projection) with mapped fields
-   - Creates a single initial `ORDER_CREATED` ledger entry per migrated order
-3. Swap the API to use the new schema.
-4. Keep legacy table for one release, then drop it in a later migration (optional).
-
-Open migration issues to decide now:
-- What do we set for `promised_date` on legacy orders (required for delay calculation)?
-- Do we backfill `received_date` from `createdAt` date-only?
+### 3.5 Data migration
+**Not needed.** No production users or data exist on the old schema. The old `orders` table and `schema.sql` will be deleted and replaced entirely by the new migration-based schema. Clean start.
 
 ---
-
+ 
 ## 4) API refactor plan (PRD-driven)
 
 ### 4.1 Orders
 Endpoints (suggested):
-- `GET /api/orders` (filters: status, vendor, product type, customer, delayed-only, due-date range; search by customer/order_number/title)
+- `GET /api/orders` (cursor-based pagination; filters: status, vendor, product type, customer, delayed-only, due-date range; search by customer/order_number/title)
 - `GET /api/orders/:id`
 - `POST /api/orders`
 - `PATCH /api/orders/:id` (general edits)
@@ -225,14 +207,38 @@ Endpoints (suggested):
 
 ### 4.3 Auth + users (RBAC)
 Endpoints (suggested):
-- `POST /api/auth/login`
-- `POST /api/auth/logout`
-- `GET /api/auth/me`
+- `POST /api/auth/login` — returns JWT in HttpOnly cookie (long expiry, ~1 year)
+- `POST /api/auth/logout` — clears cookie
+- `GET /api/auth/me` — returns current user from JWT
 - `GET/POST/PATCH /api/users` (OWNER-only for employee management)
 
+Auth mechanism (decided):
+- **JWT in HttpOnly cookie**, long expiry (~1 year). Device-based auth — login once per device, stay logged in.
+- **Password hashing:** `Bun.password.hash()` (built-in, zero external deps).
+- **Revocation:** `token_revoked_before` timestamp column on `users` table. Auth middleware checks `jwt.iat < user.token_revoked_before` → reject. Force-logout is per-user (not per-device), sufficient for MVP with ~10 trusted devices.
+- **JWT payload:** `{ user_id, device_name? }` — identity only. Role is NOT stored in JWT; it is read from `users` table on every request so role changes take effect immediately.
+- **Bootstrap:** First OWNER user registered manually via backend (seed script or direct DB insert).
+
 Middleware:
-- `requireAuth`
+- `requireAuth` — validates JWT, looks up user from DB (gets current role, checks `token_revoked_before`), attaches user to request
 - `requireRole('OWNER')`
+
+### 4.4 API response envelope & error codes
+All endpoints use a consistent response shape:
+```json
+{ "success": true, "data": ... }
+{ "success": false, "error": { "code": "NOT_FOUND", "message": "Order not found" } }
+```
+
+Standard error codes (defined in `domain/errors.ts`):
+- `VALIDATION_ERROR` — invalid input (400)
+- `NOT_FOUND` — entity doesn't exist (404)
+- `FORBIDDEN` — insufficient role/permissions (403)
+- `UNAUTHORIZED` — not logged in / invalid token (401)
+- `CONFLICT` — e.g., duplicate customer name (409)
+
+### 4.5 Soft-delete convention
+Every repository `SELECT` filters `WHERE is_deleted = 0` by default. Repositories expose an explicit `includeDeleted` option for admin/debug queries. This is enforced at the repository layer, not per-query in services/routes.
 
 ---
 
@@ -285,75 +291,60 @@ Continue with `bun test` integration tests using in-memory SQLite.
 
 ## 7) Refactor phases (incremental, shippable)
 
-### Phase 0 — Decisions + agreement (no code)
-- Confirm the DB engine and auth approach
-- Confirm naming conventions and date handling
-- Confirm migration/backfill behavior for legacy orders
+### Phase 0 — Decisions + agreement (no code) ✅ DONE
+All decisions resolved (2026-02-16). See §8 for full list.
 
 ### Phase 1 — Database foundation
 - Add migration runner + `schema_migrations`
-- Create new schema tables + indexes
-- Add seed rows (e.g., `Unknown` product type)
+- Create new schema tables + indexes (snake_case columns, prefixed IDs)
+- Delete old `schema.sql` and legacy `orders` table code
+- Add seed data: product types (Cartons, Labels, Leaflets)
+- Add `order_number` auto-generation logic (format: `YYMM-NNNN`)
+- Process stages stored as app-level constants (Design, Plate, Printing, Lamination)
 
 ### Phase 2 — Introduce new architecture layers
-- Create repositories (no route changes yet)
+- Define domain types and error codes (`domain/errors.ts`)
+- Create repositories with soft-delete filtering convention (`WHERE is_deleted = 0` by default)
 - Create services using repositories
-- Keep the old routes temporarily calling old DB until services are ready
 
-### Phase 3 — Swap API to new schema
-- Refactor order routes to call `OrderService`
+### Phase 3 — Build new API
+- Write order routes calling `OrderService`
+- Add cursor-based pagination to `GET /api/orders`
 - Add ledger endpoint and ensure ledger is written on mutations
 - Add master data routes (vendors/product types/customers)
+- Ensure consistent response envelope (`{ success, data }` / `{ success, error: { code, message } }`)
 
 ### Phase 4 — Auth + RBAC
-- Add users table + auth routes
-- Add auth middleware to protect all endpoints
+- Add users table + `token_revoked_before` column
+- Add auth routes (login → JWT in HttpOnly cookie, long expiry)
+- Add auth middleware (`requireAuth` with revocation check, `requireRole`)
+- Bootstrap first OWNER user via seed script
 - Add OWNER-only endpoints for user management + master data restrictions
 
-### Phase 5 — Cleanup + hardening
-- Remove legacy routes/schema if no longer needed
+### Phase 5 — Hardening
 - Add backup/export approach (even a simple DB file export)
 - Review error handling consistency and logs
+- Add request logging (method, path, status, duration)
+- Frontend changes flagged: new fields (product type dropdown, vendor dropdown by ID, due dates, process stage, order number) need UI updates
 
 ---
 
-## 8) Key open decisions (please answer)
+## 8) Key decisions (all resolved — 2026-02-16)
 
-1) **Database**: keep SQLite for MVP, or switch to Postgres now?
-
-2) **ID format**:
-   - `uuid` (simple, already used in current routes via `crypto.randomUUID()`)
-   - prefixed readable IDs (like `O123...`, `U123...`) as in your other project
-
-3) **Column naming**:
-   - Keep **camelCase** in SQLite (like current `orders` table)
-   - Switch to **snake_case** (more conventional SQL), mapping in repositories
-
-4) **Auth mechanism**:
-   - Cookie + server sessions (Express session-style)
-   - JWT in HttpOnly cookie (stateless)
-
-5) **Password hashing**: OK to use `bcrypt` (recommended) or do you want `argon2`?
-
-6) **Dates/timezones**:
-   - Store due dates as **date-only** (`YYYY-MM-DD`) and compute delay in local time
-   - Store everything as full ISO timestamps and derive date-only as needed
-
-7) **Legacy migration backfill**:
-   - Should `promised_date` be required for all orders going forward?
-   - For existing orders, do we set `promised_date = received_date`, leave it NULL, or set a fixed placeholder and force edit?
-
-8) **Order status set**:
-   - PRD MVP statuses: `NEW`, `IN_PROGRESS`, `READY`, `DELIVERED`, `CANCELLED` (delay computed)
-   - Current code also has `at_vendor` and `delayed`. Do you want to remove those fully?
-
-9) **One-off customers**:
-   - Do you want to allow `customer_name` directly on the order (no `customer_id`) as PRD suggests?
-   - Or always create/select a customer record?
-
-10) **Ledger payload style**:
-   - Store only “diffs” (`changes: { field: {from,to} }`) (recommended)
-   - Store full snapshots (bigger, but easier to debug)
-
-If you answer these, I can convert this plan into a concrete implementation plan with specific migration file names, endpoint contracts, and an execution sequence that minimizes downtime.
+| # | Decision | Answer |
+|---|----------|--------|
+| 1 | **Database** | Keep SQLite for MVP |
+| 2 | **ID format** | Prefixed readable IDs (`O-...`, `U-...`, `C-...`) |
+| 3 | **Column naming** | snake_case in DB, mapped in repositories |
+| 4 | **Auth mechanism** | JWT in HttpOnly cookie, long expiry (~1 year). Device-based auth. `token_revoked_before` for revocation. JWT stores `user_id` only — role read from DB on each request. |
+| 5 | **Password hashing** | `Bun.password` (built-in, zero deps) |
+| 6 | **Dates/timezones** | All ISO timestamps (business dates and system timestamps alike) |
+| 7 | **Legacy backfill** | `promised_date = received_date`; `received_date` from `createdAt`. `promised_date` required going forward. |
+| 8 | **Status set** | `NEW`, `IN_PROGRESS`, `READY`, `DELIVERED`, `CANCELLED`. `DELAYED` is computed only (not stored). `at_vendor` removed. |
+| 9 | **One-off customers** | No. Always create a customer record. |
+| 10 | **Ledger payload** | Diffs only: `{ field: { from, to } }` |
+| 11 | **Order number** | Date-prefixed auto-generated: `YYMM-NNNN` (e.g., `2602-0001`) |
+| 12 | **Pagination** | Cursor-based from day one |
+| 13 | **Process stage** | Dropdown with predefined options + "Other" free text. Stored as free text on order. |
+| 14 | **Seed user** | First OWNER registered manually via backend |
 
